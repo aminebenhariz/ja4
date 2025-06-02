@@ -12,6 +12,7 @@ use std::fmt;
 use itertools::Itertools as _;
 use ja4x::x509_parser::{certificate::X509Certificate, prelude::FromDer as _};
 use serde::Serialize;
+use tracing::{debug, warn};
 
 use crate::{Error, FormatFlags, Packet, PacketNum, Proto, Result};
 
@@ -186,23 +187,13 @@ impl ClientStats {
         let alpn = tls
             .first("tls.handshake.extensions_alpn_str")
             .map_or((None, None), first_last);
-        let sig_hash_algs = tls
-            .values("tls.handshake.sig_hash_alg")
-            .filter_map(|v| {
-                let s = v.strip_prefix("0x");
-                if s.is_none() {
-                    tracing::debug!(sig_hash_alg = v, %pkt.num, "Invalid signature algorithm");
-                }
-                s.map(str::to_owned)
-            })
-            .collect();
         let ciphers = tls
             .values("tls.handshake.ciphersuite")
             .filter(|v| !TLS_GREASE_VALUES_STR.contains(v))
             .filter_map(|v| {
                 let s = v.strip_prefix("0x");
                 if s.is_none() {
-                    tracing::debug!(cipher = v, %pkt.num, "Invalid cipher suite");
+                    debug!(cipher = v, %pkt.num, "Invalid cipher suite");
                 }
                 s.map(str::to_owned)
             })
@@ -215,7 +206,7 @@ impl ClientStats {
             exts,
             sni,
             alpn,
-            sig_hash_algs,
+            sig_hash_algs: sig_hash_algs(pkt, tls),
         })
     }
 
@@ -252,6 +243,46 @@ impl ClientStats {
             ja4_r,
         }
     }
+}
+
+/// Returns hex values of the signature algorithms.
+fn sig_hash_algs(pkt: &Packet, tls: &Proto) -> Vec<String> {
+    assert_eq!(tls.name(), "tls");
+
+    // `signature_algorithms` is not the only TLS extension that contains
+    // `tls.handshake.sig_hash_alg` fields. For example, `delegated_credentials`
+    // contains them too; see https://github.com/FoxIO-LLC/ja4/issues/41
+    //
+    // We are only interested in `signature_algorithms` extension, so we skip forward
+    // to it.
+    let mut iter = tls
+        .iter()
+        .skip_while(|&md| md.name() != "tls.handshake.extension.type" || md.value() != "13");
+    match iter.next() {
+        Some(md) => debug_assert_eq!(md.display(), "Type: signature_algorithms (13)"),
+        None => {
+            debug!(%pkt.num, "signature_algorithms TLS extension not found");
+            return Vec::new();
+        }
+    }
+    match iter.next() {
+        Some(md) => debug_assert_eq!(md.name(), "tls.handshake.extension.len"),
+        None => {
+            warn!(%pkt.num, "Unexpected end of TLS dissection");
+            return Vec::new();
+        }
+    }
+
+    iter.take_while(|&md| md.name().starts_with("tls.handshake.sig_hash_"))
+        .filter(|&md| md.name() == "tls.handshake.sig_hash_alg")
+        .filter_map(|md| {
+            let s = md.value().strip_prefix("0x");
+            if s.is_none() {
+                warn!(%pkt.num, ?md, "signature algorithm value doesn't start with \"0x\"");
+            }
+            s.map(str::to_owned)
+        })
+        .collect()
 }
 
 /// Pieces of data that is used to construct [`Ja4Fingerprint`] and [`Ja4RawFingerprint`].
@@ -293,7 +324,9 @@ impl PartsOfClientFingerprint {
 
         let nr_ciphers = 99.min(ciphers.len());
         let nr_exts = 99.min(exts.len());
-        exts.retain(|&v| v != TLS_EXT_SERVER_NAME && v != TLS_EXT_ALPN);
+        if !original_order {
+            exts.retain(|&v| v != TLS_EXT_SERVER_NAME && v != TLS_EXT_ALPN);
+        }
 
         let first_chunk = format!(
             "{quic}{tls_ver}{sni_marker}{nr_ciphers:02}{nr_exts:02}{alpn_0}{alpn_1}",
@@ -392,7 +425,7 @@ impl ServerStats {
 
         let v = tls.first("tls.handshake.ciphersuite")?;
         let Some(cipher) = v.strip_prefix("0x") else {
-            tracing::debug!(cipher = v, %pkt.num, "Invalid cipher suite");
+            debug!(cipher = v, %pkt.num, "Invalid cipher suite");
             return Ok(None);
         };
 
@@ -430,7 +463,7 @@ impl ServerStats {
 
         OutServer {
             pkt_ja4s: packet,
-            ja4s: format!("{two_chunks}_{}", crate::hash12(&exts)),
+            ja4s: format!("{two_chunks}_{hash}", hash = crate::hash12(&exts)),
             ja4s_r: flags.with_raw.then(|| format!("{two_chunks}_{exts}")),
         }
     }
@@ -473,8 +506,6 @@ enum TlsVersion {
     Ssl3_0,
     /// SSL 2.0
     Ssl2_0,
-    /// SSL 1.0
-    Ssl1_0,
     Unknown(String),
 }
 
@@ -486,8 +517,7 @@ impl From<&str> for TlsVersion {
             "0x0302" => TlsVersion::Tls1_1,
             "0x0301" => TlsVersion::Tls1_0,
             "0x0300" => TlsVersion::Ssl3_0,
-            "0x0200" => TlsVersion::Ssl2_0,
-            "0x0100" => TlsVersion::Ssl1_0,
+            "0x0002" => TlsVersion::Ssl2_0,
             _ => TlsVersion::Unknown(s.to_owned()),
         }
     }
@@ -502,7 +532,6 @@ impl fmt::Display for TlsVersion {
             TlsVersion::Tls1_0 => "10",
             TlsVersion::Ssl3_0 => "s3",
             TlsVersion::Ssl2_0 => "s2",
-            TlsVersion::Ssl1_0 => "s1",
             TlsVersion::Unknown(_) => "00",
         };
         write!(f, "{s}")
@@ -561,7 +590,7 @@ fn tls_extensions_client(tls: &Proto) -> Vec<u16> {
             Ok(n) if TLS_GREASE_VALUES_INT.contains(&n) => None,
             Ok(n) => Some(n),
             Err(error) => {
-                tracing::debug!(packet = %tls.packet_num, value = md.value(), showname = md.display(), %error, "Invalid TLS extension");
+                debug!(packet = %tls.packet_num, value = md.value(), showname = md.display(), %error, "Invalid TLS extension");
                 None
             }
         }
@@ -577,16 +606,23 @@ fn tls_extensions_server(tls: &Proto) -> Vec<u16> {
 
     tls.fields("tls.handshake.extension.type").filter_map(|md| {
         md.value().parse::<u16>().map_err(|e| {
-            tracing::debug!(packet = %tls.packet_num, value = md.value(), showname = md.display(), error = %e, "Invalid TLS extension");
+            debug!(packet = %tls.packet_num, value = md.value(), showname = md.display(), error = %e, "Invalid TLS extension");
         }).ok()
     })
     .collect()
 }
 
 fn first_last(s: &str) -> (Option<char>, Option<char>) {
+    let replace_nonascii_with_9 = |c: char| {
+        if c.is_ascii() {
+            c
+        } else {
+            '9'
+        }
+    };
     let mut chars = s.chars();
-    let first = chars.next();
-    let last = chars.next_back();
+    let first = chars.next().map(replace_nonascii_with_9);
+    let last = chars.next_back().map(replace_nonascii_with_9);
     (first, last)
 }
 
@@ -596,6 +632,16 @@ fn test_first_last() {
     assert_eq!(first_last("a"), (Some('a'), None));
     assert_eq!(first_last("ab"), (Some('a'), Some('b')));
     assert_eq!(first_last("abc"), (Some('a'), Some('c')));
+}
+
+#[test]
+fn test_first_last_non_ascii() {
+    assert_eq!('�', char::REPLACEMENT_CHARACTER);
+    assert_eq!(first_last("�"), (Some('9'), None));
+    assert_eq!(first_last("��"), (Some('9'), Some('9')));
+    assert_eq!(first_last("�x�"), (Some('9'), Some('9')));
+    assert_eq!(first_last("x�"), (Some('x'), Some('9')));
+    assert_eq!(first_last("�x"), (Some('9'), Some('x')));
 }
 
 #[cfg(test)]
@@ -661,20 +707,19 @@ mod tests {
         expect![[r#"
             {
               "tls_server_name": "example.com",
-              "ja4_o": "t13d1516h2_acb858a92679_351877bf2dc0"
+              "ja4_o": "t13d1516h2_acb858a92679_18f69afefd3d"
             }"#]]
         .assert_eq(&serde_json::to_string_pretty(&out).unwrap());
 
         let out = stats.clone().into_out(FormatFlags {
             with_raw: true,
             original_order: true,
-            ..Default::default()
         });
         expect![[r#"
             {
               "tls_server_name": "example.com",
-              "ja4_o": "t13d1516h2_acb858a92679_351877bf2dc0",
-              "ja4_ro": "t13d1516h2_1301,1302,1303,c02b,c02f,c02c,c030,cca9,cca8,c013,c014,009c,009d,002f,0035_001b,0033,4469,0017,002d,000d,0005,0023,0012,002b,ff01,000b,000a,0015_0403,0804,0401,0503,0805,0501,0806,0601"
+              "ja4_o": "t13d1516h2_acb858a92679_18f69afefd3d",
+              "ja4_ro": "t13d1516h2_1301,1302,1303,c02b,c02f,c02c,c030,cca9,cca8,c013,c014,009c,009d,002f,0035_001b,0000,0033,0010,4469,0017,002d,000d,0005,0023,0012,002b,ff01,000b,000a,0015_0403,0804,0401,0503,0805,0501,0806,0601"
             }"#]].assert_eq(&serde_json::to_string_pretty(&out).unwrap());
 
         let stats = ClientStats {

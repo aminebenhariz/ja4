@@ -1,4 +1,4 @@
-# Borrowed from https://github.com/jonhoo/rust-ci-conf/blob/6332a3af21a58f811a681a98cd44d0f5da8a1891/.github/workflows/check.yml
+# Inspired by https://github.com/jonhoo/rust-ci-conf/blob/6332a3af21a58f811a681a98cd44d0f5da8a1891/.github/workflows/check.yml
 # See the [screencast] by Jon Gjengset.
 #
 # [screencast]: https://www.youtube.com/watch?v=xUH-4y92jPg
@@ -12,6 +12,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths:
+      - 'rust/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -59,7 +61,7 @@ jobs:
           # Specify `--manifest-path` as a workaround.
           #
           # See https://github.com/actions-rs/clippy-check/issues/28
-          args: --all-features --workspace --manifest-path rust/Cargo.toml
+          args: --all-features --workspace --manifest-path rust/Cargo.toml -- -D warnings
           token: ${{ secrets.GITHUB_TOKEN }}
 
   doc:

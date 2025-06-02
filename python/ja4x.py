@@ -51,9 +51,9 @@ def to_ja4x(x, debug_stream=-1):
     # Get issuer name from CN and ON by scanning the sequence.
     # This is very specific to the way tshark holds the sequence.
     if 'printable_certs' in x:
-        certs = x['printable_certs'].copy()
-        issuers = x['issuers'].copy()
-        subjects = x['subjects'].copy()
+        certs = str(x['printable_certs'])
+        issuers = str(x['issuers'])
+        subjects = str(x['subjects'])
         idx = 1
         for _i, _s in zip(issuers, subjects):
             remove_oids(_i, ['550406', '55040b'])
@@ -78,10 +78,12 @@ def to_ja4x(x, debug_stream=-1):
     for idx, i in enumerate(x['extension_lengths']):
         i = int(i)
         header_len = '{:02d}'.format(i)
-        exts = x['cert_extensions'][:i]
-        del x['cert_extensions'][:i]
+        exts = x['cert_extensions'][:i] if isinstance(x['cert_extensions'], list) else [ x['cert_extensions']  ]
+        if isinstance(x['cert_extensions'], list):
+            del x['cert_extensions'][:i]
         hex_strings = [ oid_to_hex(ext) for ext in exts ]
-        # compute the ha4x for each cert
+
+        # compute the ja4x hash for each cert
         x[f'JA4X.{idx+1}'] = f'{x["issuer_hashes"][idx]}_{x["subject_hashes"][idx]}_' + sha256(",".join(hex_strings).encode('utf8')).hexdigest()[:12]
         cache_update(x, f'JA4X.{idx+1}', x[f'JA4X.{idx+1}'], debug_stream)
     return x

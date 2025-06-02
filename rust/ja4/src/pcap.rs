@@ -38,7 +38,7 @@ impl<'a> Packet<'a> {
     }
 
     /// Returns an iterator over the [protocols][Proto] with the given name.
-    pub(crate) fn protos<'b>(&'b self, name: &'b str) -> impl Iterator<Item = Proto> + 'b {
+    pub(crate) fn protos<'b>(&'b self, name: &'b str) -> impl Iterator<Item = Proto<'b>> {
         self.inner
             .iter()
             .filter(move |layer| layer.name() == name)
@@ -56,8 +56,18 @@ impl<'a> Packet<'a> {
         })
     }
 
+    // XXX-TODO(vvv): Propose to change the type of `rtshark::Packet::timestamp_micros`
+    // to `Option<u64>` (*unsigned*).
     pub(crate) fn timestamp_micros(&self) -> Result<i64> {
         self.inner.timestamp_micros().ok_or(Error::MissingTimestamp)
+    }
+
+    /// Returns an iterator over the [`Proto`]cols of this packet.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Proto> {
+        self.inner.iter().map(|layer| Proto {
+            inner: layer,
+            packet_num: self.num,
+        })
     }
 }
 
@@ -74,10 +84,18 @@ impl Proto<'_> {
         self.inner.name()
     }
 
+    /// Returns an iterator over all [`rtshark::Metadata`] for this protocol.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &rtshark::Metadata> {
+        self.inner.iter()
+    }
+
     /// Returns an iterator over the sequence of [`rtshark::Metadata`] with the given [name].
     ///
     /// [name]: rtshark::Metadata::name
-    pub(crate) fn fields<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &rtshark::Metadata> {
+    pub(crate) fn fields<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = &'a rtshark::Metadata> {
         self.inner.iter().filter(move |md| md.name() == name)
     }
 
@@ -85,7 +103,7 @@ impl Proto<'_> {
     ///
     /// [name]: rtshark::Metadata::name
     /// [values]: rtshark::Metadata::value
-    pub(crate) fn values<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &str> {
+    pub(crate) fn values<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
         self.fields(name).map(|md| md.value())
     }
 

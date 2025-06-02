@@ -10,31 +10,36 @@ def http_method(method):
     return method.lower()[:2]
 
 def http_language(lang):
-    lang = lang.replace('-','').lower().split(',')[0]
+    lang = lang.replace('-','').replace(';',',').lower().split(',')[0]
+    lang = lang[:4]
     return f"{lang}{'0'*(4-len(lang))}"
 
 def to_ja4h(x, debug_stream=-1):
     cookie = 'c' if 'cookies' in x else 'n'
-    referer = 'r' if 'referer' in x['headers'] else 'n'
+    header_fields = [y.lower().split(':')[0] for y in  x['headers'] ]
+    referer = 'r' if 'referer' in str(header_fields) else 'n'
+
     method = http_method(x['method'])
     version = 11 if x['hl'] == 'http' else 20
     unsorted_cookie_fields = []
     unsorted_cookie_values = []
 
     x['headers'] = [ h.split(':')[0] for h in x['headers'] ]
-    x['headers'] = [ h for h in x['headers'] if not h.startswith(':') and not h.startswith('cookie') and h != 'referer' and h ]
+    x['headers'] = [ h for h in x['headers']
+            if not h.startswith(':') and not h.lower().startswith('cookie')
+            and h.lower() != 'referer' and h ]
 
     raw_headers = x['headers'][:]
 
     #x['headers'] = [ '-'.join([ y.capitalize() for y in h.split('-')]) for h in x['headers'] ]
-    header_len = '{:02d}'.format(len(x['headers']))
+    header_len = '{:02d}'.format(min(len(x['headers']), 99))
 
     if 'cookies' in x:
         if isinstance(x['cookies'], list):
-            x['cookie_fields'] = [ y.split('=')[0] for y in x['cookies'] ]
+            x['cookie_fields'] = [ y.split('=')[0].lstrip().rstrip() for y in x['cookies'] ]
             x['cookie_values'] = [ y.lstrip().rstrip() for y in x['cookies'] ]
         else:
-            x['cookie_fields'] = [ y.split('=')[0] for y in x['cookies'].split(';') ]
+            x['cookie_fields'] = [ y.split('=')[0].lstrip().rstrip() for y in x['cookies'].split(';') ]
             x['cookie_values'] = [ y.lstrip().rstrip() for y in x['cookies'].split(';') ]
 
         unsorted_cookie_fields = x['cookie_fields'][:]

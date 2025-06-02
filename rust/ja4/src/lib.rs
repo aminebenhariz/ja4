@@ -64,7 +64,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Write JSON with JA4 fingerprints to the standard output.
+    /// Write JSON with JA4 fingerprints to the I/O stream.
     pub fn run<W: Write>(self, writer: &mut W) -> Result<()> {
         let conf = Conf::load()?;
         let Cli {
@@ -168,10 +168,12 @@ fn test_hash12() {
 fn check_tshark_version() -> Result<()> {
     use owo_colors::OwoColorize as _;
 
-    let version_output = duct::cmd!("tshark", "--version")
+    let out = duct::cmd!("tshark", "--version")
         .read()
         .map_err(|e| Error::TsharkNotFound { source: e })?;
-    let ver = parse_tshark_version(&version_output).ok_or(Error::ParseTsharkVersion)?;
+    tracing::debug!(%out, "tshark --version");
+
+    let ver = parse_tshark_version(&out).ok_or(Error::ParseTsharkVersion)?;
     let available = semver::Version::parse(ver)?;
 
     let required = semver::VersionReq::parse(">=4.0.6").expect("BUG");
@@ -193,8 +195,9 @@ fn parse_tshark_version(tshark_version_output: &str) -> Option<&str> {
     // "TShark (Wireshark) 4.0.8 (v4.0.8-0-g81696bb74857).\n"
     let start = tshark_version_output.find(") ").map(|i| i + 2)?;
     let version_start = &tshark_version_output[start..];
-    let end = version_start.find(' ')?;
-    Some(&version_start[..end])
+    let end = version_start.find(char::is_whitespace)?;
+    let ver = &version_start[..end];
+    Some(ver.strip_suffix('.').unwrap_or(ver))
 }
 
 #[test]
@@ -207,6 +210,12 @@ fn test_parse_tshark_version() {
         parse_tshark_version("TShark (Wireshark) 3.6.2 (Git v3.6.2 packaged as 3.6.2-2)"),
         Some("3.6.2")
     );
+    assert_eq!(
+        parse_tshark_version("TShark (Wireshark) 4.4.0.\n\nCopyright 1998-2024"),
+        Some("4.4.0")
+    );
+    // Abrupt end of the string.
+    assert!(parse_tshark_version("TShark (Wireshark) 4.4.0.").is_none());
     assert!(parse_tshark_version("What the TShark?!").is_none());
 }
 

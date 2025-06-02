@@ -177,13 +177,14 @@ mod state {
             } = st;
 
             let ja4l_c = (t_c.timestamp - t_b.timestamp) / 2;
+            debug_assert!(ja4l_c >= 0); // 0 if the difference == 1
+
             let ja4l_s = (t_b.timestamp - t_a.timestamp) / 2;
-            debug_assert!(ja4l_c > 0);
-            debug_assert!(ja4l_s > 0);
+            debug_assert!(ja4l_s >= 0); // 0 if the difference == 1
 
             Self::Done(Fingerprints {
-                ja4l_c: format!("{ja4l_c}_{}", client_ttl.0),
-                ja4l_s: format!("{ja4l_s}_{}", server_ttl.0),
+                ja4l_c: format!("{ja4l_c}_{client_ttl}", client_ttl = client_ttl.0),
+                ja4l_s: format!("{ja4l_s}_{server_ttl}", server_ttl = server_ttl.0),
             })
         }
     }
@@ -210,9 +211,9 @@ impl Timestamp {
         let ack = tcp.first("tcp.flags.ack")?;
         let syn = tcp.first("tcp.flags.syn")?;
         Ok(match (syn, ack) {
-            ("1", "0") => Some(Self::Syn((t()?, Ttl::new(pkt)?))),
-            ("1", "1") => Some(Self::SynAck((t()?, Ttl::new(pkt)?))),
-            ("0", "1") => Some(Self::Ack(t()?)),
+            ("1", "0") | ("True", "False") => Some(Self::Syn((t()?, Ttl::new(pkt)?))),
+            ("1", "1") | ("True", "True") => Some(Self::SynAck((t()?, Ttl::new(pkt)?))),
+            ("0", "1") | ("False", "True") => Some(Self::Ack(t()?)),
             _ => None,
         })
     }

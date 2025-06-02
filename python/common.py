@@ -13,8 +13,7 @@ quic_cache = {}
 http_cache = {}
 ssh_cache = {}
 
-TLS_MAPPER = {'256': "s1",
-              '512': "s2",
+TLS_MAPPER = {'0x0002': "s2",
               '0x0300': "s3",
               '0x0301': "10",
               '0x0302': "11",
@@ -96,15 +95,18 @@ def sha_encode(values):
 # processes ciphers found in a packet
 # tshark keeps the ciphers either as a list or as a single value
 # based on whether it is ciphersuites or ciphersuite
-def get_hex_sorted(values, sort=True):
+def get_hex_sorted(entry, field, sort=True):
+    values = entry[field]
     if not isinstance(values, list):
         values = [ values ]
 
     # remove GREASE and calculate length
     c = [ x[2:] for x in values if x not in GREASE_TABLE ]
-    actual_length = len(c)
+    actual_length = min(len(c), 99)
+
     # now remove SNI and ALPN values
-    c = [ x for x in c if x not in ['0000', '0010']]
+    if field == 'extensions' and sort:
+        c = [ x for x in c if x not in ['0000', '0010']]
 
     c.sort() if sort else None
 
@@ -139,3 +141,19 @@ def scan_tls(layer):
         for l in layer:
             if 'tls_tls_handshake_type' in l:
                 return l
+
+# Get the right signature algorithms
+def get_signature_algorithms(packet): 
+    if 'sig_alg_lengths' in packet and isinstance(packet['sig_alg_lengths'], list):
+        alg_lengths = [ int(int(x)/2) for x in packet['sig_alg_lengths'] ]
+
+        extensions = packet['extensions']
+        idx = 0
+        try:
+            if extensions.index('13') > extensions.index('35'):
+                idx = 1 
+        except Exception as e:
+            pass
+        packet['signature_algorithms'] = packet['signature_algorithms'][alg_lengths[idx]:]
+    return [ x for x in packet['signature_algorithms'] if x not in GREASE_TABLE ]
+        
